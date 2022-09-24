@@ -1,0 +1,221 @@
+import React from "react";
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { Keyframe } from "../../typings";
+
+interface MapProps {
+    zoom: number;
+    mapId?: string;
+    keyframes: Keyframe[];
+}
+
+const ACTIVITY_TO_MODEL: Record<Keyframe['activity'], string> = {
+    'walking': 'person.glb',
+    'running': 'person.glb',
+    'cycling': 'pin.gltf',
+    'driving': 'pin.gltf',
+    'UNKNOWN': 'person.glb',
+}
+
+const ACTIVITY_TO_ANIMATION_INDEX: Record<Keyframe['activity'], number | undefined> = {
+    'walking': 3,
+    'running': 4,
+    'UNKNOWN': 0,
+    'cycling': undefined,
+    'driving': undefined,
+}
+
+const lonLatToVector3 = (lng: number, lat: number) => {
+    const out = new THREE.Vector3();
+    lat = Math.PI / 2 - lat;
+    out.set(
+        Math.sin( lat ) * Math.sin( lng ),
+        Math.cos( lat ),
+        Math.sin( lat ) * Math.cos( lng )
+    );
+    return out;
+}
+
+const Map: React.FC<MapProps> = ({ zoom, mapId = '949ef5dcea77455', keyframes = [] }) => {
+    const ref = React.useRef<HTMLDivElement>(null);
+    const [map, setMap] = React.useState<google.maps.Map>();
+
+    const center = React.useMemo(() => {
+        const all = keyframes.reduce((acc, keyframe) => {
+            acc.lat += keyframe.lat;
+            acc.lng += keyframe.lng;
+            return acc;
+        }, { lat: 0, lng: 0 });
+        all.lat = all.lat / keyframes.length
+        all.lng = all.lng / keyframes.length
+        return all;
+    }, [keyframes]);
+
+    const initWebGLOverlay = React.useCallback((map: google.maps.Map) => {
+        let scene: THREE.Scene;
+        let renderer: THREE.WebGLRenderer;
+        let camera: THREE.PerspectiveCamera;
+        let loader: GLTFLoader;
+        let clock: THREE.Clock;
+        const objects: Record<string, {
+            model: THREE.Group,
+            animation?: THREE.AnimationMixer,
+        }> = {};
+        const webGLOverlayView = new google.maps.WebGLOverlayView();
+
+        const loadModelAndPlayAnimation = (model: string, animationIndex?: number): Promise<{
+            model: THREE.Group,
+            animation?: THREE.AnimationMixer,
+        }> => new Promise(
+            (resolve) => {
+                loader.load(
+                    model,
+                    gltf => {
+                        const model = gltf.scene;
+
+                        model.scale.set(5, 5, 5);
+                        model.rotation.x = 90 * Math.PI / 180;
+                        model.rotation.y = 90 * Math.PI / 180;
+        
+                        scene.add(model);
+
+                        let mixer: THREE.AnimationMixer | undefined;
+        
+                        if (typeof animationIndex === 'number') {
+                            const skeleton = new THREE.SkeletonHelper(model);
+                            skeleton.visible = false;
+                            scene.add(skeleton);
+            
+                            const animations = gltf.animations;
+                            mixer = new THREE.AnimationMixer( model );
+            
+                            const anim = animations[animationIndex];
+                            const action = anim && mixer.clipAction( anim );
+                            action?.play();
+                        }
+
+                        resolve({ model, animation: mixer });
+                    }
+                );
+            }
+        )
+
+        const update = () => {
+            const delta = clock.getDelta();
+            Object.values(objects).forEach(({ animation }) => {
+                animation?.update(delta);
+            });
+        }
+
+        webGLOverlayView.onAdd = () => {
+            clock = new THREE.Clock();
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera();
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.75); // soft white light
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.25);
+            directionalLight.position.set(0.5, -1, 0.5);
+            scene.add(directionalLight);
+            loader = new GLTFLoader();
+
+            const objectAndFirstKeyframes = keyframes.reduce<Record<string, Keyframe>>((acc, keyframe) => {
+                if (acc[keyframe.id]) {
+                    return acc;
+                }
+                acc[keyframe.id] = keyframe;
+                return acc;
+            }, {});
+
+            Object.entries(objectAndFirstKeyframes).forEach(async ([_id, keyframe]) => {
+                const model = ACTIVITY_TO_MODEL[keyframe.activity];
+                const animation = ACTIVITY_TO_ANIMATION_INDEX[keyframe.activity];
+
+                console.log('added', _id, model, animation);
+
+                const object = await loadModelAndPlayAnimation(model, animation);
+                objects[_id] = object;
+            });
+        }
+
+        webGLOverlayView.onContextRestored = ({ gl }) => {
+            renderer = new THREE.WebGLRenderer({
+                canvas: gl.canvas,
+                context: gl,
+                ...gl.getContextAttributes(),
+            });
+            renderer.autoClear = false;
+        }
+
+        webGLOverlayView.onDraw = ({ gl, transformer }) => {
+            const latLngAltitudeLiteral = {
+                lat: center.lat,
+                lng: center.lng,
+                altitude: 0
+            }
+
+            const currentTime = clock.elapsedTime * 10000;
+
+            const objectsAndCurrentKeyframes = keyframes.reduce<Record<string, Keyframe>>((acc, keyframe) => {
+                if (keyframe.timestamp < currentTime) {
+                    return acc;
+                }
+                if (acc[keyframe.id]) {
+                    return acc;
+                }
+                acc[keyframe.id] = keyframe;
+                return acc;
+            }, {});
+
+            Object.entries(objectsAndCurrentKeyframes).forEach(([id, keyframe]) => {
+                renderer
+                const pos = lonLatToVector3(keyframe.lng, keyframe.lat);
+                objects[id]?.model.position.set(pos.x, pos.y, keyframe.alt);
+                // console.log(keyframe.lat, keyframe.lng, keyframe.timestamp, currentTime);
+                // objects[id]?.model.position.setZ(keyframe.alt);
+                // objects[id]?.model.position.setY(keyframe.lng - center.lng);
+                // objects[id]?.model.position.setX(keyframe.lat - center.lat);
+            });
+    
+            const matrix = transformer.fromLatLngAltitude(latLngAltitudeLiteral);
+            camera.projectionMatrix = new THREE.Matrix4().fromArray(matrix);
+    
+            update();
+            webGLOverlayView.requestRedraw();
+            renderer.render(scene, camera);
+    
+            renderer.resetState();
+        }
+
+        webGLOverlayView.setMap(map);
+    }, [center, keyframes]);
+
+    React.useLayoutEffect(() => {
+        if (ref.current && !map) {
+            const newMap = new window.google.maps.Map(ref.current, {
+                tilt: 0,
+                heading: 0,
+                center,
+                zoom,
+                mapId,
+            });
+            setMap(newMap);
+            initWebGLOverlay(newMap);
+        }
+    }, [map, center, zoom, mapId, initWebGLOverlay]);
+
+
+    return (
+        <>
+            <div
+                style={{
+                    minHeight: "100vh",
+                }}
+                ref={ref}
+            >
+            </div>
+        </>
+    )
+};
+
+
+export default Map;

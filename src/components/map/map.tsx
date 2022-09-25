@@ -290,7 +290,7 @@ const Map: React.FC<MapProps> = ({ zoom, mapId = '949ef5dcea77455', keyframes = 
         overlay.update = () => {
             // const scene = overlay.getScene();
             const delta = clock.getDelta();
-            const currentTime = (clock.elapsedTime) * 1000 * 10;
+            const currentTime = (clock.elapsedTime) * 1000;
 
             overlay.requestRedraw();
 
@@ -408,7 +408,7 @@ const Map: React.FC<MapProps> = ({ zoom, mapId = '949ef5dcea77455', keyframes = 
 
                         const shapes = font.generateShapes( message, 3 );
                         const geometry = new THREE.ShapeGeometry( shapes );
-                        geometry.translate(0, 20, 0);
+                        geometry.translate(0, 10, 0);
                         geometry.computeBoundingBox();
                         const text = new THREE.Mesh( geometry, matLite );
 
@@ -444,6 +444,16 @@ const Map: React.FC<MapProps> = ({ zoom, mapId = '949ef5dcea77455', keyframes = 
                 mapId,
                 disableDefaultUI: true,
                 streetViewControl: false,
+                clickableIcons: false,
+                styles: [
+                    {
+                        featureType: "poi",
+                        elementType: "labels",
+                        stylers: [
+                              { visibility: "off" }
+                        ]
+                    }
+                ]
             });
             setMap(newMap);
             initWebGLOverlay(newMap);
